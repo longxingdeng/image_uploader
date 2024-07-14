@@ -67,7 +67,7 @@ class image_uploader(Plugin):
             logger.info(f"缓存用户 {user_id} 的文本消息: {msg.content}")
             # 检查是否有缓存的图片
             if user_id in user_image_cache:
-                self.process_combined_message(user_id, context)
+                self.process_combined_message(user_id, context, e_context)
 
         # 处理图片消息
         elif context.type == ContextType.IMAGE:
@@ -83,7 +83,7 @@ class image_uploader(Plugin):
                 logger.info(f"缓存用户 {user_id} 的图片链接: {image_url}")
                 # 检查是否有缓存的文字消息
                 if user_id in user_text_cache:
-                    self.process_combined_message(user_id, context)
+                    self.process_combined_message(user_id, context, e_context)
             else:
                 # 图片上传失败
                 reply = Reply()
@@ -92,14 +92,18 @@ class image_uploader(Plugin):
                 e_context["reply"] = reply
                 e_context.action = EventAction.BREAK_PASS
 
-    def process_combined_message(self, user_id, context):
+    def process_combined_message(self, user_id, context, e_context):
         # 获取缓存的文本和图片
         text_message = user_text_cache.pop(user_id, "")
         image_url = user_image_cache.pop(user_id, "")
 
-        # 整合图片链接和文本
-        combined_message = f"{image_url},{text_message}"
+        # 整合消息并添加执行工作流的指令
+        combined_message = f"执行工作流, {image_url}, {text_message}"
         
+        # 缓存整合后的消息
+        user_text_cache[user_id] = combined_message
+        logger.info(f"缓存用户 {user_id} 的整合消息: {combined_message}")
+
         # 发送整合后的消息给 ByteDanceCozeBot
         self.send_to_coze_bot(combined_message, context)
 
@@ -107,8 +111,8 @@ class image_uploader(Plugin):
         reply = Reply()
         reply.type = ReplyType.TEXT
         reply.content = f"图片上传成功:\n{image_url}"
-        context["reply"] = reply
-        context.action = EventAction.BREAK_PASS
+        e_context["reply"] = reply
+        e_context.action = EventAction.BREAK_PASS
 
     def upload_to_smms(self, image_path):
         url = 'https://sm.ms/api/v2/upload'
@@ -134,11 +138,18 @@ class image_uploader(Plugin):
             logger.error(f"图片上传请求出错: {e}")
             return None
 
-    def send_to_coze_bot(self, message, context):
+    def send_to_coze_bot(self, message, original_context):
         try:
             # 通过 Bridge 获取 ByteDanceCozeBot 实例并发送消息
             bridge = Bridge()
             coze_bot = bridge.get_bot("chat")  # 获取 ByteDanceCozeBot 实例
+
+            # 从原始 context 复制必要的属性
+            context = Context(type=ContextType.TEXT, content=message)
+            context["session_id"] = original_context.get("session_id")
+            context["msg"] = original_context.get("msg")
+            context["user_id"] = original_context.get("user_id")
+
             reply = coze_bot.reply(message, context)  # 发送消息
             logger.info(f"已将消息发送到 ByteDanceCozeBot: {message}")
             return reply
