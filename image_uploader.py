@@ -11,6 +11,7 @@ from channel.chat_message import ChatMessage
 from common.log import logger
 from bridge.bridge import Bridge  # 调整导入路径
 from plugins import Plugin  # 导入 Plugin 类
+import threading  # 导入 threading 模块
 
 # 用于暂存用户文本消息的字典
 user_text_cache = {}
@@ -67,7 +68,7 @@ class image_uploader(Plugin):
             logger.info(f"缓存用户 {user_id} 的文本消息: {msg.content}")
             # 检查是否有缓存的图片
             if user_id in user_image_cache:
-                self.process_combined_message(user_id, context, e_context)
+                threading.Thread(target=self.process_combined_message, args=(user_id, context)).start()
 
         # 处理图片消息
         elif context.type == ContextType.IMAGE:
@@ -81,9 +82,17 @@ class image_uploader(Plugin):
                 # 缓存用户的图片链接
                 user_image_cache[user_id] = image_url
                 logger.info(f"缓存用户 {user_id} 的图片链接: {image_url}")
+
+                # 立即返回图片链接给用户
+                reply = Reply()
+                reply.type = ReplyType.TEXT
+                reply.content = f"图片上传成功:\n{image_url}"
+                e_context["reply"] = reply
+                e_context.action = EventAction.BREAK_PASS
+
                 # 检查是否有缓存的文字消息
                 if user_id in user_text_cache:
-                    self.process_combined_message(user_id, context, e_context)
+                    threading.Thread(target=self.process_combined_message, args=(user_id, context)).start()
             else:
                 # 图片上传失败
                 reply = Reply()
@@ -92,27 +101,16 @@ class image_uploader(Plugin):
                 e_context["reply"] = reply
                 e_context.action = EventAction.BREAK_PASS
 
-    def process_combined_message(self, user_id, context, e_context):
+    def process_combined_message(self, user_id, context):
         # 获取缓存的文本和图片
         text_message = user_text_cache.pop(user_id, "")
         image_url = user_image_cache.pop(user_id, "")
 
         # 整合消息并添加执行工作流的指令
-        combined_message = f"执行工作流, {image_url}, {text_message}"
+        combined_message = f"执行工作流，{image_url}，{text_message}"
         
-        # 缓存整合后的消息
-        user_text_cache[user_id] = combined_message
-        logger.info(f"缓存用户 {user_id} 的整合消息: {combined_message}")
-
         # 发送整合后的消息给 ByteDanceCozeBot
         self.send_to_coze_bot(combined_message, context)
-
-        # 返回图片链接给用户
-        reply = Reply()
-        reply.type = ReplyType.TEXT
-        reply.content = f"图片上传成功:\n{image_url}"
-        e_context["reply"] = reply
-        e_context.action = EventAction.BREAK_PASS
 
     def upload_to_smms(self, image_path):
         url = 'https://sm.ms/api/v2/upload'
