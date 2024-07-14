@@ -5,11 +5,16 @@ import plugins
 import os
 import json
 from bridge.reply import Reply, ReplyType
-from bridge.context import ContextType
+from bridge.context import ContextType, Context  # 导入 Context 类
 from plugins.event import Event, EventAction, EventContext
 from channel.chat_message import ChatMessage
 from common.log import logger
 from bridge.bridge import Bridge  # 调整导入路径
+from plugins import Plugin  # 导入 Plugin 类
+
+# 用于暂存用户文本消息的字典
+user_text_cache = {}
+user_image_cache = {}
 
 @plugins.register(
     name="image_uploader",
@@ -18,49 +23,67 @@ from bridge.bridge import Bridge  # 调整导入路径
     version="0.1.0",
     author="xiaolong",
 )
-class image_uploader:
+class image_uploader(Plugin):
     def __init__(self):
-        self.conf = self.load_config()  # 直接调用实例方法
-        self.smms_key = self.conf.get("smms_key", "") 
-        if not self.smms_key:
-            raise ValueError("smms_key not found in config")
+        super().__init__()
+        try:
+            curdir = os.path.dirname(__file__)
+            config_path = os.path.join(curdir, "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    self.config = json.load(f)
+            else:
+                # 使用父类的方法来加载配置
+                self.config = super().load_config()
 
-        self.handlers = {Event.ON_HANDLE_CONTEXT: self.on_handle_context}  # 初始化 handlers 属性
-        logger.info("[image_uploader] inited.")
+                if not self.config:
+                    raise Exception("config.json not found")
+            
+            # 设置事件处理函数
+            self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
 
-    def load_config(self):
-        # 在这里实现 load_config 方法
-        # 返回一个包含配置信息的字典
-        return {
-            "smms_key": "your_smms_key_here"
-        }
+            # 从配置中提取所需的设置
+            self.smms_key = self.config.get("smms_key", "")
+
+            if not self.smms_key:
+                raise ValueError("smms_key not found in config")
+
+            logger.info("[image_uploader] inited with smms_key")
+
+        except Exception as e:
+            logger.error(f"image_uploader init failed: {e}")
 
     def on_handle_context(self, e_context: EventContext):
         context = e_context["context"]
         msg: ChatMessage = e_context["context"]["msg"]  # 获取 ChatMessage 对象
 
+        # 获取用户ID
+        user_id = msg.from_user_id
+
+        # 处理文字消息
+        if context.type == ContextType.TEXT:
+            # 缓存用户发送的文字消息
+            user_text_cache[user_id] = msg.content
+            logger.info(f"缓存用户 {user_id} 的文本消息: {msg.content}")
+            # 检查是否有缓存的图片
+            if user_id in user_image_cache:
+                self.process_combined_message(user_id, context)
+
         # 处理图片消息
-        if context.type == ContextType.IMAGE:
+        elif context.type == ContextType.IMAGE:
             logger.info("on_handle_context: 开始处理图片")
             context.get("msg").prepare()
             image_path = context.content
             logger.info(f"on_handle_context: 获取到图片路径 {image_path}")
 
             image_url = self.upload_to_smms(image_path)
-
             if image_url:
-                # 返回图片链接给用户
-                reply = Reply()
-                reply.type = ReplyType.TEXT
-                reply.content = f"图片上传成功:\n{image_url}"
-                e_context["reply"] = reply
-
-                # 继续处理，将图片链接传递给 ByteDanceCozeBot
-                e_context.action = EventAction.CONTINUE
-
-                # 整合图片链接和文本
-                combined_message = f"{image_url} , {msg.content}"
-                self.send_to_coze_bot(combined_message, context)
+                # 缓存用户的图片链接
+                user_image_cache[user_id] = image_url
+                logger.info(f"缓存用户 {user_id} 的图片链接: {image_url}")
+                # 检查是否有缓存的文字消息
+                if user_id in user_text_cache:
+                    self.process_combined_message(user_id, context)
             else:
                 # 图片上传失败
                 reply = Reply()
@@ -69,22 +92,29 @@ class image_uploader:
                 e_context["reply"] = reply
                 e_context.action = EventAction.BREAK_PASS
 
-            # 删除图片文件
-            os.remove(image_path)
-            logger.info(f"文件 {image_path} 已删除")
+    def process_combined_message(self, user_id, context):
+        # 获取缓存的文本和图片
+        text_message = user_text_cache.pop(user_id, "")
+        image_url = user_image_cache.pop(user_id, "")
 
-        # 处理文字消息
-        elif context.type == ContextType.TEXT:
-            # 获取用户发送的文字消息
-            text_message = msg.content  # 假设WechatMessage对象有content属性
+        # 整合图片链接和文本
+        combined_message = f"{image_url},{text_message}"
+        
+        # 发送整合后的消息给 ByteDanceCozeBot
+        self.send_to_coze_bot(combined_message, context)
 
-            # 将文字消息更新到 context 中
-            e_context["context"].content = text_message 
+        # 返回图片链接给用户
+        reply = Reply()
+        reply.type = ReplyType.TEXT
+        reply.content = f"图片上传成功:\n{image_url}"
+        context["reply"] = reply
+        context.action = EventAction.BREAK_PASS
 
     def upload_to_smms(self, image_path):
         url = 'https://sm.ms/api/v2/upload'
         files = {'smfile': open(image_path, 'rb')}
         headers = {'Authorization': self.smms_key}
+        logger.info(f"Uploading image with SMMS Key: {self.smms_key}")
         try:
             response = requests.post(url, files=files, headers=headers)
             response.raise_for_status()  # 检查请求是否成功
