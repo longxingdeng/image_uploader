@@ -8,5 +8,7 @@
 #installp https://github.com/longxingdeng/image_uploader.git
 #scanp
 ```
+https://sm.ms/login注册，获取apikey
+
 将config.json.template文件名改为congfig.json
 替换你的sm.ms key
